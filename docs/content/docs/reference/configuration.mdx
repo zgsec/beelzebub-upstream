@@ -35,6 +35,7 @@ All core settings are nested below `core`.
 | `commands` | command array | by protocol | Ordered match rules; maximum 100 |
 | `fallbackCommand` | command | no | Response for unmatched input |
 | `tools` | tool array | MCP only | MCP tool definitions; maximum 100 |
+| `captureMCPRequests` | boolean | MCP only | Record one observation event per `POST /mcp` with the request and reply retained up to 64 KiB each; default `false` |
 | `serverName` | string | no | Hostname or product name exposed to clients |
 | `serverVersion` | string | no | Protocol banner/version string |
 | `banner` | string | no | Initial TCP data or HTTP greeting content |

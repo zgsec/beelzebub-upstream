@@ -8,3 +8,37 @@ MCP service files require `tools` and do not use `commands`. Each tool has a nam
 Never expose administrative or service-management tools on a public MCP endpoint. A client allowed to invoke such a tool may alter runtime listeners or configuration. Keep these capabilities out of decoy tool definitions, restrict the endpoint to an isolated trusted agent, and treat `destructiveHint` as descriptive metadata rather than an access-control mechanism.
 
 Keep the decoy tool outside any real tool execution boundary. Record invocations as security events, alert on unexpected use, and test with an isolated agent. See the [MCP tripwire recipe](../../recipes/mcp-tripwire).
+
+## Request capture
+
+Set `captureMCPRequests: true` on an MCP service to record one event for every routed `POST /mcp`, including `initialize`, `tools/list`, calls to tools that are not defined, unknown methods, and malformed bodies. A conforming POST contains one JSON-RPC request, notification, or response. Without capture, only a successful tool call produces an event. The default is `false`. Tool execution, replies, and the existing tool-invocation events do not change.
+
+Each observation carries `Msg: "MCP request observation"`, the request bytes in `Body`, the reply bytes in `CommandOutput`, and these `Metadata` keys. Values are strings.
+
+`Command` holds the JSON-RPC method string only when the retained request is complete, valid UTF-8, and a JSON object with a string `method` field; otherwise it is empty. This extracts the declared method without validating the JSON-RPC message.
+
+| Key | Meaning |
+| --- | --- |
+| `capture.kind` | Always `mcp.request`; filter on this key |
+| `capture.started_at` | UTC RFC 3339 timestamp with nanoseconds |
+| `capture.duration_us` | Handler time in microseconds, including body reads and reply writes |
+| `capture.handler_completed` | `true` when the handler returned normally; `false` on panic |
+| `request.content_length` | Declared `Content-Length`; `-1` when unknown |
+| `request.content_type`, `response.content_type` | Header values; replies may be JSON or `text/event-stream` |
+| `request.observed_bytes`, `response.observed_bytes` | Bytes seen before the 64 KiB retention limit was applied |
+| `request.complete`, `response.complete` | Whole body retained with no I/O error; the response also requires a normal handler return |
+| `request.truncated`, `response.truncated` | Observed bytes exceeded the retained prefix; `false` does not imply complete |
+| `request.read_error`, `response.write_error` | Present only when an error was observed |
+| `request.encoding`, `response.encoding` | Present only as `base64` when the retained bytes are not valid UTF-8 |
+| `response.status` | HTTP status the handler wrote; `0` if none before an abnormal return |
+| `connection.id`, `connection.request_seq` | Random id for the server-side TCP connection and the request's ordinal on it |
+| `mcp.session_id` | `Mcp-Session-Id` the server assigned, or the one the client presented |
+| `mcp.protocol_version` | Request `MCP-Protocol-Version` header, only when non-empty; recorded without parsing or validation |
+
+A request rejected before its non-empty body is read leaves `Body` empty with `request.complete=false`. An HTTP 200 can carry a JSON-RPC error; read the reply. A complete UTF-8 `Body` preserves the original text, which may still be malformed JSON. Do not parse a truncated body as a complete request. A connection or session id is not an actor identity. A presented session id or protocol version is a client claim, not proof that the server accepted it; newer sessionless transports may ignore a presented session id.
+
+Not captured: `GET` subscriptions, `DELETE` session termination, requests Go's HTTP server rejects before routing, and anything lost when the process or the configured tracer fails. This is a bounded application-layer record, not packet capture.
+
+An SSE response can contain multiple JSON-RPC messages; `CommandOutput` retains the HTTP response body, not one decoded message. `response.complete` describes retention of the application's writes, not delivery to the client or proof of a valid JSON-RPC reply.
+
+Both directions can contain credentials, personal data, and attacker-controlled content. Enable only where log access and retention are appropriate. Retention is bounded per event, not globally. Confirm that the tracer you use preserves `Body`, `CommandOutput`, and `Metadata`.

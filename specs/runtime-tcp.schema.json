@@ -8,6 +8,7 @@
     },
     {
       "properties": {
+        "captureMCPRequests": false,
         "protocol": {
           "const": "tcp"
         },

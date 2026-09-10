@@ -79,6 +79,7 @@ type BeelzebubServiceConfiguration struct {
 	Address                string    `yaml:"address" json:"address"`
 	Commands               []Command `yaml:"commands" json:"commands,omitempty"`
 	Tools                  []Tool    `yaml:"tools" json:"tools,omitempty"`
+	CaptureMCPRequests     bool      `yaml:"captureMCPRequests,omitempty" json:"captureMCPRequests,omitempty"`
 	FallbackCommand        Command   `yaml:"fallbackCommand" json:"fallbackCommand,omitempty"`
 	ServerVersion          string    `yaml:"serverVersion" json:"serverVersion,omitempty"`
 	ServerName             string    `yaml:"serverName" json:"serverName,omitempty"`

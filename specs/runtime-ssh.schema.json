@@ -13,6 +13,7 @@
         "commands"
       ],
       "properties": {
+        "captureMCPRequests": false,
         "maxHistory": false,
         "wireEncoding": false,
         "framing": false,

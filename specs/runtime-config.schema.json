@@ -32,6 +32,10 @@
       "type": "string",
       "description": "Human-readable label for this honeypot service."
     },
+    "captureMCPRequests": {
+      "type": "boolean",
+      "description": "MCP only. Opt in to bounded request/reply observations for POST /mcp. Default false; retains up to 64 KiB per direction, potentially including sensitive data."
+    },
     "serverVersion": {
       "type": "string",
       "description": "Banner/version string sent to clients during handshake (e.g. OpenSSH, Apache/2.4.53)."

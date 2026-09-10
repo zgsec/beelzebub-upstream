@@ -125,7 +125,12 @@ func (mcpStrategy *MCPStrategy) Init(servConf parser.BeelzebubServiceConfigurati
 		}),
 	)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", httpServer)
+	var handler http.Handler = httpServer
+	if servConf.CaptureMCPRequests {
+		httpSrv.ConnContext = captureConnContext
+		handler = captureRequests(handler, servConf, tr)
+	}
+	mux.Handle("/mcp", handler)
 	httpSrv.Handler = mux
 
 	listener, err := net.Listen("tcp", servConf.Address)
