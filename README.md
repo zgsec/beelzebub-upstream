@@ -1,95 +1,78 @@
-# Beelzebub
+# Before the dataset, preserve the encounter
 
-[![CI](https://github.com/beelzebub-labs/beelzebub/actions/workflows/main.yml/badge.svg)](https://github.com/beelzebub-labs/beelzebub/actions/workflows/main.yml)
-[![codecov](https://codecov.io/gh/beelzebub-labs/beelzebub/graph/badge.svg?token=8XTK7D4WHE)](https://codecov.io/gh/beelzebub-labs/beelzebub)
-[![Go Reference](https://pkg.go.dev/badge/github.com/beelzebub-labs/beelzebub/v3.svg)](https://pkg.go.dev/github.com/beelzebub-labs/beelzebub/v3)
-[![Trust Score](https://archestra.ai/mcp-catalog/api/badge/quality/beelzebub-labs/beelzebub)](https://archestra.ai/mcp-catalog/beelzebub-labs__beelzebub)
-[![Mentioned in Awesome Go](https://awesome.re/mentioned-badge.svg)](https://github.com/avelino/awesome-go)
+A contribution fork of [Beelzebub](https://github.com/beelzebub-labs/beelzebub)
+from a research operator. A honeypot's value is bounded by what it writes
+down. Queries can be improved later; a request, reply, or sequence that was
+never recorded cannot be recovered after the encounter has ended.
 
-**Open-source deception runtime framework.** Beelzebub deploys realistic decoys, collects high-fidelity threat intelligence, detects prompt-injection attempts against AI agents, and can be extended with trusted Go plugins.
+This fork proposes small, opt-in changes to what Beelzebub records. It does
+not propose the research stack that reads those records.
 
-![GitHub Beelzebub - Inception Program](https://github.com/user-attachments/assets/e180d602-6de9-4c48-92ad-eb0ef3c5322d)
+## Branches
 
-## Table Of Contents
+| branch | commits | what |
+|---|---:|---|
+| `main` | 0 | tracks upstream, untouched |
+| `base/pr-338` | 0 | the head of upstream PR #338 as of 2026-09-10; every branch below is built on it |
+| `proposal/research-capture` | 1 | MCP: record every request and reply, including the ones that never reach a tool. [Note](notes/research-capture.md) |
+| `proposal/cloud-dto-fidelity` | 1 | Cloud: forward `Handler` and `HeadersMap` in the event DTO. [Note](notes/cloud-dto-fidelity.md) |
+| `draft/research-telemetry` | 1 | Session, order, timing, and capture completeness on every protocol; structured MCP tool events. For testing and discussion, not a pull request. [Note](notes/research-telemetry.md) |
+| `proposals` | 1 | this page, the notes, and the demo kit |
 
-- [Key Features](#key-features)
-- [Quick Start](#quick-start)
-- [Documentation](#documentation)
-- [Demo](#demo)
-- [Development](#development)
-- [Contributing](#contributing)
-- [Supported By](#supported-by)
-- [License](#license)
+`proposal/` means ready for a pull request. `draft/` means run it, test it,
+and say what you think. PR #338 is open; the branches will be rebased when
+it lands.
 
-## Key Features
+## What the research fork records beyond stock
 
-- **Adaptive deception:** engage attackers with static or LLM-powered responses while collecting actionable behavior.
-- **Low-code configuration:** define realistic services, routes, and response rules in YAML.
-- **Multi-protocol coverage:** protect infrastructure and AI-agent surfaces with SSH, HTTP, TCP, TELNET, and MCP decoys.
-- **Extensible runtime:** add trusted response generators and services through the public Go plugin SDK.
-- **Operational visibility:** expose Prometheus metrics and forward structured events to RabbitMQ or Beelzebub Cloud.
-- **Flexible deployment:** run locally, with Docker Compose, or on Kubernetes with Helm.
+The research fork behind this proposal diverged from upstream a year ago and
+has grown by about fifty thousand lines. Its event has 81 fields against
+upstream's 27. Everything it adds falls into three layers. Only the first
+belongs in the product.
 
-## Quick Start
+**The record: what gets written down.** Every MCP request and reply,
+including rejected ones. Tool arguments as JSON. Which requests were one
+connection, in what order, how far apart. The lure's own latency. The
+response status and whether the retained body is complete. The rule that
+matched, delivered to Cloud. This layer is what the branches above propose.
 
-Use the Docker installer for an isolated lab deployment:
+**The lure: how the sensor answers.** Decoy Ollama and OpenAI APIs,
+response templating, fault injection, canary credential pools, custom
+service files. This is what makes one operator's sensors theirs. It stays
+with the operator.
 
-```bash
-git clone https://github.com/beelzebub-labs/beelzebub.git
-cd beelzebub
-./install.sh --docker
+**The classifier: what it means.** Agent and novelty scoring, objective
+inference, TLS and SSH fingerprints, a content-addressed artifact store.
+These are opinions about the record. They belong in a research pipeline
+that can be wrong and revised, not in the product's event log.
+
+## Run the demo
+
+Two containers from one image: the pinned base, and the base plus
+`proposal/research-capture`. Same shipped MCP configuration on both; the
+candidate's copy has one line added, `captureMCPRequests: true`. Requires
+Docker, Go, Python 3.10+, Git, curl, jq, Bash. No API keys.
+
+```sh
+git clone --branch proposals https://github.com/zgsec/beelzebub-upstream.git
+cd beelzebub-upstream/demo-kit
+./up.sh        # builds both pinned commits, starts both containers on loopback
+./verify.sh    # sends the same requests to both, asserts what each recorded
 ```
 
-Run `beelzebub validate` before exposing any service. Use synthetic credentials and read the [production safety guide](https://docs.beelzebub.ai/operations/production-safety) before internet exposure.
+Then watch and probe by hand:
 
-## Documentation
-
-Read the complete, current documentation at **[docs.beelzebub.ai](https://docs.beelzebub.ai)**. It includes installation, configuration, protocol behavior, Docker and Helm operations, observability, security guidance, recipes, plugin authoring, and contribution workflows.
-
-## Demo
-
-See an LLM-powered deception service respond dynamically to attacker input and sustain a realistic interaction beyond fixed command handlers.
-
-![Beelzebub LLM Deception Demo](https://github.com/user-attachments/assets/4dbb9a67-6c12-49c5-82ac-9b3e340406ca)
-
-## Development
-
-Runtime development requires Go 1.25.9, Git, and Make. Build the binary from a local checkout:
-
-```bash
-git clone https://github.com/beelzebub-labs/beelzebub.git
-cd beelzebub
-make build
+```sh
+./watch.sh baseline      # one pane: docker logs -f, pretty-printed
+./watch.sh candidate     # another pane
+./probe.sh both env      # a request our sensors recorded: read_file /app/.env
+./probe.sh both call     # a call to a tool the shipped config defines
+./probe.sh both short    # an upload that declares more bytes than it sends
 ```
 
-Run unit tests, static analysis, schema validation, and full configuration validation before opening a pull request:
+The baseline records nothing for a request that fails. The candidate
+records the request, the reply, and whether the exchange was complete. See
+[demo-kit/RUNBOOK.md](demo-kit/RUNBOOK.md) for what each probe sends and
+[demo-kit/MANIFEST.md](demo-kit/MANIFEST.md) for the pins.
 
-```bash
-make test.unit
-go vet ./...
-make validate-all
-```
-
-Integration tests additionally require Docker. Start their dependencies, run the suite, and tear the environment down afterward:
-
-```bash
-make test.dependencies.start
-make test.integration
-make test.dependencies.down
-```
-
-See the [development workflow](https://docs.beelzebub.ai/contributing/development) for runtime changes and the [documentation workflow](https://docs.beelzebub.ai/contributing/documentation) for the pnpm-based Fumadocs site.
-
-## Contributing
-
-Contributions are welcome. Follow [CONTRIBUTING.md](CONTRIBUTING.md), participate according to the [Code Of Conduct](CODE_OF_CONDUCT.md), and report vulnerabilities privately through [SECURITY.md](SECURITY.md).
-
-## Supported By
-
-Beelzebub is developed with support from organizations that invest in open-source software. We thank JetBrains for providing the tools that help us build and maintain the project.
-
-[![JetBrains Logo](https://resources.jetbrains.com/storage/products/company/brand/logos/jetbrains.svg)](https://jb.gg/OpenSourceSupport)
-
-## License
-
-Beelzebub is licensed under the [GNU General Public License v3.0](LICENSE).
+`./down.sh` removes the demo containers and their logs.
