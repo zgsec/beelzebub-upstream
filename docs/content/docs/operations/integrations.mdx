@@ -7,6 +7,8 @@ description: Connect RabbitMQ, Prometheus, LLM providers, and Beelzebub Cloud wi
 
 Beelzebub Cloud uses `core.beelzebub-cloud` or the `BEELZEBUB_CLOUD_*` variables and requires both a URI and authorization token. The installer can verify the Cloud endpoint and writes credentials to a private `.env` file. Keep the token in the environment or an orchestrator secret rather than committing it to YAML.
 
+Every event field, including `Handler` and `HeadersMap`, is forwarded to Cloud; the runtime does not filter fields at the boundary.
+
 When Cloud is enabled, the runtime loads the service configurations at startup and synchronizes them periodically. Configure the interval with `beelzebub-cloud.pollingIntervalSeconds`; the default is 15 seconds and values less than or equal to zero use that default.
 
 ```yaml

@@ -43,6 +43,7 @@ type EventDTO struct {
 	SourceIp        string
 	SourcePort      string
 	TLSServerName   string
+	Handler         string
 	Metadata        map[string]string `json:",omitempty"`
 }
 
@@ -276,6 +277,8 @@ func (beelzebubCloud *BeelzebubCloud) mapToEventDTO(event tracer.Event) (EventDT
 		SourceIp:        event.SourceIp,
 		SourcePort:      event.SourcePort,
 		TLSServerName:   event.TLSServerName,
+		Handler:         event.Handler,
+		HeadersMap:      event.HeadersMap,
 		Metadata:        event.Metadata,
 	}
 
