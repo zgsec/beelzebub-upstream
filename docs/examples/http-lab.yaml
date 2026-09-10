@@ -2,6 +2,7 @@ apiVersion: "v1"
 protocol: "http"
 address: ":8080"
 description: "Lab HTTP decoy"
+captureResponseBody: true
 commands:
   - regex: "^/$"
     methods: [GET, HEAD]

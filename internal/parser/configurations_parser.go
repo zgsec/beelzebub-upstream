@@ -86,9 +86,14 @@ type BeelzebubServiceConfiguration struct {
 	PasswordRegex          string    `yaml:"passwordRegex" json:"passwordRegex,omitempty"`
 	Description            string    `yaml:"description" json:"description,omitempty"`
 	Banner                 string    `yaml:"banner" json:"banner,omitempty"`
-	Plugin                 Plugin    `yaml:"plugin" json:"plugin,omitempty"`
-	TLSCertPath            string    `yaml:"tlsCertPath" json:"tlsCertPath,omitempty"`
-	TLSKeyPath             string    `yaml:"tlsKeyPath" json:"tlsKeyPath,omitempty"`
+	// CaptureResponseBody opts an HTTP service into retaining the served
+	// response body in Event.CommandOutput. The http.response.status metadata
+	// key is emitted whether or not this is set; no other response descriptor
+	// is emitted, so the default retains no new content.
+	CaptureResponseBody bool   `yaml:"captureResponseBody,omitempty" json:"captureResponseBody,omitempty"`
+	Plugin              Plugin `yaml:"plugin" json:"plugin,omitempty"`
+	TLSCertPath         string `yaml:"tlsCertPath" json:"tlsCertPath,omitempty"`
+	TLSKeyPath          string `yaml:"tlsKeyPath" json:"tlsKeyPath,omitempty"`
 	// MaxHistory caps how many session history entries are kept for LLM context
 	// on interactive TCP sessions. Zero means use the built-in
 	// default of 20 entries.

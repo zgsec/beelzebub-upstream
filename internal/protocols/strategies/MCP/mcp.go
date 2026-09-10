@@ -2,11 +2,16 @@ package MCP
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/beelzebub-labs/beelzebub/v3/internal/parser"
 	"github.com/beelzebub-labs/beelzebub/v3/internal/tracer"
@@ -32,6 +37,8 @@ type MCPStrategy struct {
 func (mcpStrategy *MCPStrategy) SetDeployFn(fn DeployFunc) {
 	mcpStrategy.deployFn = fn
 }
+
+const mcpMetadataMaxBytes = 256
 
 func (mcpStrategy *MCPStrategy) Init(servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer) error {
 	if oldServer, ok := mcpStrategy.servers[servConf.Address]; ok {
@@ -94,24 +101,16 @@ func (mcpStrategy *MCPStrategy) Init(servConf parser.BeelzebubServiceConfigurati
 		tool := mcp.NewTool(toolConfig.Name, opts...)
 
 		mcpServer.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			host, port, _ := net.SplitHostPort(ctx.Value(remoteAddrCtxKey{}).(string))
+			started := time.Now()
+			remoteAddr, _ := ctx.Value(remoteAddrCtxKey{}).(string)
+			host, port, _ := net.SplitHostPort(remoteAddr)
 
 			if toolConfig.Name == deployDeployToolName && mcpStrategy.deployFn != nil {
 				return mcpStrategy.handleDeploy(ctx, request, servConf, tr, host, port)
 			}
 
-			tr.TraceEvent(tracer.Event{
-				Msg:           "New MCP tool invocation",
-				Protocol:      tracer.MCP.String(),
-				Status:        tracer.Stateless.String(),
-				RemoteAddr:    ctx.Value(remoteAddrCtxKey{}).(string),
-				SourceIp:      host,
-				SourcePort:    port,
-				ID:            uuid.New().String(),
-				Description:   servConf.Description,
-				Command:       fmt.Sprintf("%s|%s", request.Params.Name, request.Params.Arguments),
-				CommandOutput: toolConfig.Handler,
-			})
+			tr.TraceEvent(buildMCPEvent(ctx, remoteAddr, servConf.Description, toolConfig.Handler,
+				request, started))
 			return mcp.NewToolResultText(toolConfig.Handler), nil
 		})
 	}
@@ -255,4 +254,77 @@ func (mcpStrategy *MCPStrategy) handleDeploy(ctx context.Context, request mcp.Ca
 	})
 
 	return mcp.NewToolResultText(fmt.Sprintf(`{"status":"success","message":"deployed %s honeypot on %s"}`, cfg.Protocol, cfg.Address)), nil
+}
+
+func buildMCPEvent(ctx context.Context, remoteAddr, description, output string, request mcp.CallToolRequest, started time.Time) tracer.Event {
+	host, port, _ := net.SplitHostPort(remoteAddr)
+	metadata := map[string]string{
+		"timing.latency_ms": strconv.FormatInt(max(0, time.Since(started).Milliseconds()), 10),
+		"mcp.tool_name":     truncateMCPValue(request.Params.Name),
+	}
+	if args := boundedMCPJSON(request.GetRawArguments()); args != "" {
+		metadata["mcp.tool_args"] = args
+	}
+	if version := server.RequestProtocolVersion(ctx); version != "" {
+		metadata["mcp.protocol_version"] = truncateMCPValue(version)
+	}
+	if session := server.ClientSessionFromContext(ctx); session != nil {
+		if id := session.SessionID(); id != "" {
+			metadata["mcp.session_id"] = id
+		}
+		if client, ok := session.(server.SessionWithClientInfo); ok {
+			info := client.GetClientInfo()
+			if info.Name != "" {
+				metadata["mcp.client.name"] = truncateMCPValue(info.Name)
+			}
+			if info.Version != "" {
+				metadata["mcp.client.version"] = truncateMCPValue(info.Version)
+			}
+			if caps := boundedMCPJSON(client.GetClientCapabilities()); caps != "" && caps != "{}" {
+				metadata["mcp.client.capabilities"] = caps
+			}
+		}
+	}
+	return tracer.Event{
+		Msg:           "New MCP tool invocation",
+		Protocol:      tracer.MCP.String(),
+		Status:        tracer.Stateless.String(),
+		RemoteAddr:    remoteAddr,
+		SourceIp:      host,
+		SourcePort:    port,
+		ID:            uuid.New().String(),
+		Description:   description,
+		Command:       fmt.Sprintf("%s|%s", request.Params.Name, request.Params.Arguments),
+		CommandOutput: output,
+		Metadata:      metadata,
+	}
+}
+
+func truncateMCPValue(value string) string {
+	if len(value) <= mcpMetadataMaxBytes {
+		return value
+	}
+	value = value[:mcpMetadataMaxBytes]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
+
+// boundedMCPJSON preserves valid JSON. Oversized values become a small marker
+// carrying the complete value's digest instead of an invalid JSON prefix.
+func boundedMCPJSON(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	if len(encoded) <= mcpMetadataMaxBytes {
+		return string(encoded)
+	}
+	digest := sha256.Sum256(encoded)
+	marker, _ := json.Marshal(map[string]any{
+		"truncated": true,
+		"sha256":    hex.EncodeToString(digest[:]),
+	})
+	return string(marker)
 }

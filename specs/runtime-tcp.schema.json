@@ -8,6 +8,7 @@
     },
     {
       "properties": {
+        "captureResponseBody": false,
         "protocol": {
           "const": "tcp"
         },

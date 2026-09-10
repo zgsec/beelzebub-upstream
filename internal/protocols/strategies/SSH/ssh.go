@@ -30,6 +30,23 @@ type SSHStrategy struct {
 	cleanerOnce sync.Once
 }
 
+type sshEventSessionCtxKey struct{}
+
+// eventSessionForSSHContext returns the telemetry session owned by one SSH
+// transport connection. gliderlabs/ssh shares this context across authentication
+// callbacks and every channel opened on the connection, so login and command
+// events retain one key without treating an address or username as identity.
+func eventSessionForSSHContext(ctx ssh.Context) *tracer.EventSession {
+	ctx.Lock()
+	defer ctx.Unlock()
+	if session, ok := ctx.Value(sshEventSessionCtxKey{}).(*tracer.EventSession); ok && session != nil {
+		return session
+	}
+	session := tracer.NewEventSession("")
+	ctx.SetValue(sshEventSessionCtxKey{}, session)
+	return session
+}
+
 type readyListener struct {
 	net.Listener
 	ready     chan struct{}
@@ -106,6 +123,8 @@ func (sshStrategy *SSHStrategy) Init(servConf parser.BeelzebubServiceConfigurati
 
 func handleSession(sess ssh.Session, servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer, sessions *historystore.HistoryStore) {
 	uuidSession := uuid.New()
+	started := time.Now()
+	eventSession := eventSessionForSSHContext(sess.Context())
 
 	host, port, _ := net.SplitHostPort(sess.RemoteAddr().String())
 	sessionKey := "SSH" + host + sess.User()
@@ -158,6 +177,7 @@ func handleSession(sess ssh.Session, servConf parser.BeelzebubServiceConfigurati
 					Command:       sess.RawCommand(),
 					CommandOutput: commandOutput,
 					Handler:       command.Name,
+					Metadata:      eventSession.NextTimedMetadata(started, time.Now()),
 				})
 				return
 			}
@@ -175,6 +195,7 @@ func handleSession(sess ssh.Session, servConf parser.BeelzebubServiceConfigurati
 		Environ:     strings.Join(sess.Environ(), ","),
 		User:        sess.User(),
 		Description: servConf.Description,
+		Metadata:    eventSession.NextTimedMetadata(started, time.Now()),
 	})
 
 	terminal := term.NewTerminal(sess, buildPrompt(sess.User(), servConf.ServerName))
@@ -191,6 +212,7 @@ func handleSession(sess ssh.Session, servConf parser.BeelzebubServiceConfigurati
 		if commandInput == "exit" {
 			break
 		}
+		interactionStarted := time.Now()
 		for _, command := range servConf.Commands {
 			if command.Regex.MatchString(commandInput) {
 				commandOutput := command.Handler
@@ -233,22 +255,28 @@ func handleSession(sess ssh.Session, servConf parser.BeelzebubServiceConfigurati
 					Protocol:      tracer.SSH.String(),
 					Description:   servConf.Description,
 					Handler:       command.Name,
+					Metadata:      eventSession.NextTimedMetadata(interactionStarted, time.Now()),
 				})
 				break
 			}
 		}
 	}
 
+	// On the End event timing.latency_ms is the whole session duration,
+	// measured from the moment the session handler started.
 	tr.TraceEvent(tracer.Event{
 		Msg:      "End SSH Session",
 		Status:   tracer.End.String(),
 		ID:       uuidSession.String(),
 		Protocol: tracer.SSH.String(),
+		Metadata: eventSession.NextTimedMetadata(started, time.Now()),
 	})
 }
 
 func handlePassword(ctx ssh.Context, password string, servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer) bool {
+	started := time.Now()
 	host, port, _ := net.SplitHostPort(ctx.RemoteAddr().String())
+	eventSession := eventSessionForSSHContext(ctx)
 
 	tr.TraceEvent(tracer.Event{
 		Msg:         "New SSH Login Attempt",
@@ -262,6 +290,7 @@ func handlePassword(ctx ssh.Context, password string, servConf parser.BeelzebubS
 		SourcePort:  port,
 		ID:          uuid.New().String(),
 		Description: servConf.Description,
+		Metadata:    eventSession.NextTimedMetadata(started, time.Now()),
 	})
 	matched, err := regexp.MatchString(servConf.PasswordRegex, password)
 	if err != nil {

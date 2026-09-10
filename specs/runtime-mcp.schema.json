@@ -11,6 +11,7 @@
         "tools"
       ],
       "properties": {
+        "captureResponseBody": false,
         "maxHistory": false,
         "wireEncoding": false,
         "framing": false,

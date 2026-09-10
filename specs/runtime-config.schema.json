@@ -32,6 +32,10 @@
       "type": "string",
       "description": "Human-readable label for this honeypot service."
     },
+    "captureResponseBody": {
+      "type": "boolean",
+      "description": "HTTP only. Retain the served response body in the event CommandOutput field. Disabled by default; the http.response.status metadata key is emitted whether or not this is set."
+    },
     "serverVersion": {
       "type": "string",
       "description": "Banner/version string sent to clients during handshake (e.g. OpenSSH, Apache/2.4.53)."

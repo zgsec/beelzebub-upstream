@@ -142,7 +142,9 @@ func (telnetStrategy *TelnetStrategy) Stop(servConf parser.BeelzebubServiceConfi
 }
 
 func handleTelnetConnection(conn net.Conn, servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer, telnetStrategy *TelnetStrategy) {
+	connectionStarted := time.Now()
 	defer conn.Close()
+	eventSession := tracer.NewEventSession("")
 
 	host, port, _ := net.SplitHostPort(conn.RemoteAddr().String())
 
@@ -190,6 +192,7 @@ func handleTelnetConnection(conn net.Conn, servConf parser.BeelzebubServiceConfi
 		SourcePort:  port,
 		ID:          uuid.New().String(),
 		Description: servConf.Description,
+		Metadata:    eventSession.NextTimedMetadata(connectionStarted, time.Now()),
 	})
 
 	matched, err := regexp.MatchString(servConf.PasswordRegex, password)
@@ -206,6 +209,7 @@ func handleTelnetConnection(conn net.Conn, servConf parser.BeelzebubServiceConfi
 
 	uuidSession := uuid.New()
 	sessionKey := "TELNET" + host + username
+	sessionStarted := time.Now()
 
 	tr.TraceEvent(tracer.Event{
 		Msg:         "New TELNET Terminal Session",
@@ -217,6 +221,7 @@ func handleTelnetConnection(conn net.Conn, servConf parser.BeelzebubServiceConfi
 		ID:          uuidSession.String(),
 		User:        username,
 		Description: servConf.Description,
+		Metadata:    eventSession.NextTimedMetadata(sessionStarted, time.Now()),
 	})
 
 	var histories []plugins.Message
@@ -240,6 +245,7 @@ func handleTelnetConnection(conn net.Conn, servConf parser.BeelzebubServiceConfi
 		if commandInput == "exit" {
 			break
 		}
+		interactionStarted := time.Now()
 
 		matched := false
 		for _, command := range servConf.Commands {
@@ -295,6 +301,7 @@ func handleTelnetConnection(conn net.Conn, servConf parser.BeelzebubServiceConfi
 					User:          username,
 					Description:   servConf.Description,
 					Handler:       handlerName,
+					Metadata:      eventSession.NextTimedMetadata(interactionStarted, time.Now()),
 				})
 
 				break
@@ -321,15 +328,19 @@ func handleTelnetConnection(conn net.Conn, servConf parser.BeelzebubServiceConfi
 				User:          username,
 				Description:   servConf.Description,
 				Handler:       "not_found",
+				Metadata:      eventSession.NextTimedMetadata(interactionStarted, time.Now()),
 			})
 		}
 	}
 
+	// On the End event timing.latency_ms is the whole terminal-session
+	// duration, measured from the moment the login was accepted.
 	tr.TraceEvent(tracer.Event{
 		Msg:      "End TELNET Session",
 		Status:   tracer.End.String(),
 		ID:       uuidSession.String(),
 		Protocol: tracer.TELNET.String(),
+		Metadata: eventSession.NextTimedMetadata(sessionStarted, time.Now()),
 	})
 }
 

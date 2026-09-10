@@ -460,17 +460,19 @@ func (tcpStrategy *TCPStrategy) Shutdown() error {
 // tcpSession holds the immutable per-connection context shared by the helpers
 // that handle one interactive TCP connection.
 type tcpSession struct {
-	servConf   parser.BeelzebubServiceConfiguration
-	tr         tracer.Tracer
-	strategy   *TCPStrategy
-	tlsState   *tlsCertificateState
-	ctx        context.Context
-	host       string
-	port       string
-	remoteAddr string
-	connID     string // per-connection UUID (WireContext.ConnID)
-	sessionKey string // per-source key for cross-connection LLM history
-	cutoff     time.Time
+	servConf     parser.BeelzebubServiceConfiguration
+	tr           tracer.Tracer
+	strategy     *TCPStrategy
+	tlsState     *tlsCertificateState
+	ctx          context.Context
+	host         string
+	port         string
+	remoteAddr   string
+	connID       string               // per-connection UUID (WireContext.ConnID)
+	eventSession *tracer.EventSession // telemetry identity for this connection
+	sessionKey   string               // per-source key for cross-connection LLM history
+	started      time.Time            // connection handling start
+	cutoff       time.Time
 }
 
 func tcpHistoryKey(servConf parser.BeelzebubServiceConfiguration, host string) string {
@@ -496,6 +498,7 @@ func handleTCPConnection(conn net.Conn, servConf parser.BeelzebubServiceConfigur
 }
 
 func handleTCPConnectionWithState(conn net.Conn, servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer, tcpStrategy *TCPStrategy, tlsState *tlsCertificateState, ctx context.Context) {
+	started := time.Now()
 	// Closure form (not `defer conn.Close()`): conn is reassigned to the
 	// TLS-wrapped connection on upgrade, and the closure captures it by
 	// reference, so this closes the encrypted connection, not the original.
@@ -516,6 +519,8 @@ func handleTCPConnectionWithState(conn net.Conn, servConf parser.BeelzebubServic
 		host = conn.RemoteAddr().String()
 		port = ""
 	}
+	connID := uuid.New().String()
+	eventSession := tracer.NewEventSession(connID)
 
 	// Send banner if configured. Encoded via Latin-1 so binary (\xHH) banners
 	// survive; trailing "\n" preserves upstream line-based banner behavior.
@@ -530,29 +535,31 @@ func handleTCPConnectionWithState(conn net.Conn, servConf parser.BeelzebubServic
 
 	// Backward compatibility: if no commands configured, use legacy behavior.
 	if len(servConf.Commands) == 0 {
-		serveStateless(conn, servConf, tr, host, port)
+		serveStateless(conn, servConf, tr, host, port, eventSession, tcpHistoryKey(servConf, host), started)
 		return
 	}
 
 	sess := &tcpSession{
-		servConf:   servConf,
-		tr:         tr,
-		strategy:   tcpStrategy,
-		tlsState:   tlsState,
-		ctx:        ctx,
-		host:       host,
-		port:       port,
-		remoteAddr: conn.RemoteAddr().String(),
-		connID:     uuid.New().String(),
-		sessionKey: tcpHistoryKey(servConf, host),
-		cutoff:     cutoff,
+		servConf:     servConf,
+		tr:           tr,
+		strategy:     tcpStrategy,
+		tlsState:     tlsState,
+		ctx:          ctx,
+		host:         host,
+		port:         port,
+		remoteAddr:   conn.RemoteAddr().String(),
+		connID:       connID,
+		eventSession: eventSession,
+		sessionKey:   tcpHistoryKey(servConf, host),
+		started:      started,
+		cutoff:       cutoff,
 	}
 	sess.serve(conn)
 }
 
 // serveStateless handles the legacy no-commands path: read one buffer, emit a
 // single stateless attempt event, and return.
-func serveStateless(conn net.Conn, servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer, host, port string) {
+func serveStateless(conn net.Conn, servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer, host, port string, eventSession *tracer.EventSession, sourceKey string, started time.Time) {
 	buffer := make([]byte, 1024)
 	command := ""
 	commandRaw := ""
@@ -562,6 +569,8 @@ func serveStateless(conn net.Conn, servConf parser.BeelzebubServiceConfiguration
 			commandRaw = hexEscapeNonPrintable(buffer[:n])
 		}
 	}
+	metadata := eventSession.NextTimedMetadata(started, time.Now())
+	metadata["session.source_key"] = sourceKey
 	tr.TraceEvent(tracer.Event{
 		Msg:         "New TCP attempt",
 		Protocol:    tracer.TCP.String(),
@@ -571,9 +580,22 @@ func serveStateless(conn net.Conn, servConf parser.BeelzebubServiceConfiguration
 		RemoteAddr:  conn.RemoteAddr().String(),
 		SourceIp:    host,
 		SourcePort:  port,
-		ID:          uuid.New().String(),
+		ID:          eventSession.Key(),
 		Description: servConf.Description,
+		Metadata:    metadata,
 	})
+}
+
+func (s *tcpSession) timedMetadata(existing map[string]string, started, ended time.Time) map[string]string {
+	metadata := make(map[string]string, len(existing)+5)
+	for key, value := range existing {
+		metadata[key] = value
+	}
+	for key, value := range s.eventSession.NextTimedMetadata(started, ended) {
+		metadata[key] = value
+	}
+	metadata["session.source_key"] = s.sessionKey
+	return metadata
 }
 
 // serve runs the interactive command loop for one connection.
@@ -601,13 +623,19 @@ func (s *tcpSession) serve(conn net.Conn) {
 		Status:      tracer.Start.String(),
 		ID:          s.connID,
 		Description: s.servConf.Description,
+		Metadata:    s.timedMetadata(nil, s.started, time.Now()),
 	})
-	defer s.tr.TraceEvent(tracer.Event{
-		Msg:      "End TCP Session",
-		Status:   tracer.End.String(),
-		ID:       s.connID,
-		Protocol: tracer.TCP.String(),
-	})
+	// On the End event timing.latency_ms is the whole connection duration,
+	// measured from the moment the connection handler started.
+	defer func() {
+		s.tr.TraceEvent(tracer.Event{
+			Msg:      "End TCP Session",
+			Status:   tracer.End.String(),
+			ID:       s.connID,
+			Protocol: tracer.TCP.String(),
+			Metadata: s.timedMetadata(nil, s.started, time.Now()),
+		})
+	}()
 
 	histories := s.loadHistory()
 
@@ -636,6 +664,7 @@ func (s *tcpSession) serve(conn net.Conn) {
 		}
 
 		commandInput := commandMatchInput(rawBuffer, s.servConf.WireEncoding)
+		interactionStarted := time.Now()
 
 		// Preserve the exact bytes when the input is not valid UTF-8 (binary
 		// protocols), so the forensic record survives the lossy Latin-1→UTF-8
@@ -667,6 +696,7 @@ func (s *tcpSession) serve(conn net.Conn) {
 				}
 			}
 
+			ev.Metadata = s.timedMetadata(ev.Metadata, interactionStarted, time.Now())
 			s.tr.TraceEvent(ev)
 
 			if command.TLSUpgrade {
@@ -695,7 +725,7 @@ func (s *tcpSession) serve(conn net.Conn) {
 		}
 
 		if !matched {
-			s.traceNotFound(commandInput, commandRaw)
+			s.traceNotFound(commandInput, commandRaw, interactionStarted)
 		}
 		if terminalReadError {
 			return
@@ -892,7 +922,7 @@ func (s *tcpSession) upgradeTLS(conn net.Conn) (net.Conn, bool) {
 }
 
 // traceNotFound emits the interaction event for input that matched no command.
-func (s *tcpSession) traceNotFound(commandInput, commandRaw string) {
+func (s *tcpSession) traceNotFound(commandInput, commandRaw string, started time.Time) {
 	s.tr.TraceEvent(tracer.Event{
 		Msg:         "TCP Session Interaction",
 		RemoteAddr:  s.remoteAddr,
@@ -905,5 +935,6 @@ func (s *tcpSession) traceNotFound(commandInput, commandRaw string) {
 		Protocol:    tracer.TCP.String(),
 		Description: s.servConf.Description,
 		Handler:     "not_found",
+		Metadata:    s.timedMetadata(nil, started, time.Now()),
 	})
 }

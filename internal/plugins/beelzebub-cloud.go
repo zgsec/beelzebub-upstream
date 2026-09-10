@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/beelzebub-labs/beelzebub/v3/internal/parser"
 	"github.com/beelzebub-labs/beelzebub/v3/internal/tracer"
@@ -276,7 +278,7 @@ func (beelzebubCloud *BeelzebubCloud) mapToEventDTO(event tracer.Event) (EventDT
 		SourceIp:        event.SourceIp,
 		SourcePort:      event.SourcePort,
 		TLSServerName:   event.TLSServerName,
-		Metadata:        event.Metadata,
+		Metadata:        boundMetadata(event.Metadata),
 	}
 
 	if len(event.Headers) > 0 {
@@ -288,4 +290,39 @@ func (beelzebubCloud *BeelzebubCloud) mapToEventDTO(event tracer.Event) (EventDT
 	}
 
 	return eventDTO, nil
+}
+
+const (
+	metadataMaxKeys       = 32
+	metadataMaxValueBytes = 256
+)
+
+// boundMetadata applies the Event.Metadata wire bounds without modifying the
+// event. Sorting makes the chosen keys deterministic when the producer exceeds
+// the limit. Values are byte-bounded at a valid UTF-8 boundary so JSON encoding
+// cannot silently replace a split rune.
+func boundMetadata(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(in))
+	for key := range in {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if len(keys) > metadataMaxKeys {
+		keys = keys[:metadataMaxKeys]
+	}
+	out := make(map[string]string, len(keys))
+	for _, key := range keys {
+		value := in[key]
+		if len(value) > metadataMaxValueBytes {
+			value = value[:metadataMaxValueBytes]
+			for !utf8.ValidString(value) {
+				value = value[:len(value)-1]
+			}
+		}
+		out[key] = value
+	}
+	return out
 }

@@ -7,4 +7,75 @@ Every interaction becomes a tracer event with protocol, source address, command/
 
 Prometheus exposes `beelzebub_events_total` plus protocol counters such as `beelzebub_ssh_events_total`, `beelzebub_http_events_total`, `beelzebub_tcp_events_total`, `beelzebub_telnet_events_total`, and `beelzebub_mcp_events_total` at the configured endpoint (default `:2112/metrics`).
 
+## Metadata Key Convention
+
+`Metadata` is the additive carrier for protocol-specific event attributes. Runtime-owned keys are lower-case and dotted, and their first segment is one of these reserved domains:
+
+- `session.` -- transport-session identity and ordering
+- `timing.` -- elapsed durations
+- `body.` -- request-body descriptors
+- `http.` -- HTTP protocol descriptors
+- `mcp.` -- MCP protocol descriptors
+
+Body content does not belong in `Metadata`; the retained bytes live in `Body` and `CommandOutput`, and `Metadata` carries only what a consumer cannot recover from them. Third-party keys remain accepted; producers should namespace new custom keys so they do not collide with the reserved domains.
+
+### Session and timing keys
+
+HTTP, SSH, TCP, and Telnet events built through the session builder carry:
+
+| Key | Meaning |
+| --- | --- |
+| `session.key` | Identity of one transport session: an HTTP TCP connection (keep-alive requests share it; a new connection does not), an SSH connection (login attempts and channels share it), one TCP or Telnet connection. It is transport identity, not actor identity |
+| `session.seq` | Zero-based ordinal allocated under the session's lock just before the event is handed to the tracer. It is allocation order, not arrival order and not delivery order: when one session handles requests concurrently, a later request can be allocated first, and the tracer's worker pool can deliver events to a sink in a different order again. No two events share a `(session.key, session.seq)` pair; sort by it to recover allocation order |
+| `timing.latency_ms` | Elapsed milliseconds for the unit of work the event describes. SSH, TCP, and Telnet per-interaction events measure from the input being read to the reply being written. HTTP measures from handler entry to the response being decided, which includes plugin execution but not the write to the socket. Session-end events measure from the session or connection start |
+| `timing.since_prev_ms` | Milliseconds between this event's end time and the latest end time previously recorded in the same session. The session keeps a high-water end time, so an event that completes out of order can report `0` rather than a negative value; `0` on the first event |
+
+TCP also emits `session.source_key`, the per-source key used for cross-connection LLM history, so a consumer can relate connections from one source without treating that key as identity.
+
+### HTTP capture descriptors
+
+| Key | When emitted | Meaning |
+| --- | --- | --- |
+| `http.response.status` | every HTTP event | Status the handler selected; commands with an invalid status are recorded as `200`, which is what the wire sends |
+| `body.request.truncated` | only when the request body was cut | Always `true`; the retained `Body` is a prefix |
+| `body.request.read_budget` | only alongside `body.request.truncated` | Read limit in bytes (`1048576`) |
+| `body.request.read_error` | only when reading the body failed | The error text; the bytes read before it are retained in `Body`. A read error and budget truncation are different conditions and can both be present |
+
+A complete request body read without error leaves no `body.` keys behind. Setting `captureResponseBody: true` on an HTTP service also retains the served response body, including the `405 Method Not Allowed` body, in `CommandOutput`; no other response descriptor is emitted.
+
+### MCP keys
+
+MCP tool events are built from the request and the library's session
+context. The runtime keeps no session state of its own for MCP.
+
+| Key | When emitted | Meaning |
+| --- | --- | --- |
+| `mcp.tool_name` | every tool invocation | Name of the invoked tool |
+| `mcp.tool_args` | when arguments were supplied | Arguments as JSON; values over 256 bytes are replaced by `{"truncated":true,"sha256":"..."}` |
+| `mcp.client.name`, `mcp.client.version` | when the client declared them | From the library session's client info |
+| `mcp.client.capabilities` | when the client declared any | From the library session, as JSON, bounded the same way |
+| `mcp.protocol_version` | when the library context has one | The protocol version in effect: negotiated at initialize for a session, or declared in the request for a sessionless client |
+| `mcp.session_id` | when the library context has one | The library's session id, for correlation only. The library accepts well-formed ids it never registered, so the value is not proof of initialization |
+| `timing.latency_ms` | every tool invocation | Milliseconds from tool-handler entry to event construction; the response write is not included |
+
+MCP tool events carry no `session.key`, `session.seq`, or
+`timing.since_prev_ms`. An MCP session can span TCP connections, and a
+per-session counter would duplicate the session lifecycle the library
+owns. The uniqueness and previous-event timing guarantees above apply to
+HTTP, SSH, TCP, and Telnet only. A sessionless request carries client
+fields without `mcp.session_id`; a session header the library ignores is
+not recorded as one.
+
+Request capture (`captureMCPRequests`) is a separate record of the raw
+request and reply at the HTTP boundary; its `mcp.session_id` and
+`mcp.protocol_version` are the headers as sent, and its connection counter
+orders requests on one connection, not across a session.
+
+The built-in `beelzebub:deploy` tool is the exception: its success event
+bypasses this builder and carries none of the keys above.
+
+### Wire bounds
+
+The Cloud adapter forwards at most 32 keys and 256 UTF-8 bytes per value. It keeps the lexicographically first 32 keys so the result is deterministic, truncates values at a valid UTF-8 boundary, and does not mutate the source event.
+
 RabbitMQ publishes structured JSON to the `event` queue when enabled. Cloud reporting is optional; read [Cloud integration](../../operations/integrations) before sending captured data outside the host.

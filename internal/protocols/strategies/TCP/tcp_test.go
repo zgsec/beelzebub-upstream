@@ -139,12 +139,14 @@ func TestServeStateless_PreservesDataReturnedWithEOF(t *testing.T) {
 	conn := &eofWithDataConn{Conn: server, data: []byte("final payload")}
 	mt := &mockTracer{}
 
-	serveStateless(conn, parser.BeelzebubServiceConfiguration{Description: "test"}, mt, "127.0.0.1", "1234")
+	serveStateless(conn, parser.BeelzebubServiceConfiguration{Description: "test"}, mt, "127.0.0.1", "1234", tracer.NewEventSession("test-connection"), "TCP||127.0.0.1", time.Now())
 
 	events := mt.snapshot()
 	if len(events) != 1 || events[0].Command != "final payload" {
 		t.Fatalf("events = %#v, want EOF-adjacent payload preserved", events)
 	}
+	assert.Equal(t, "0", events[0].Metadata["session.seq"])
+	assert.Equal(t, "TCP||127.0.0.1", events[0].Metadata["session.source_key"])
 }
 
 func TestHandleTCPConnection_WithBanner(t *testing.T) {

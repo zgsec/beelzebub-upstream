@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,9 @@ type HTTPStrategy struct {
 	servers   map[string]*http.Server
 	listeners map[string]net.Listener
 }
+
+type httpSessionCtxKey struct{}
+type httpTimingStartCtxKey struct{}
 
 type httpResponse struct {
 	StatusCode int
@@ -52,6 +56,13 @@ func (httpStrategy *HTTPStrategy) Init(servConf parser.BeelzebubServiceConfigura
 	srv := &http.Server{
 		Addr:    servConf.Address,
 		Handler: serverMux,
+		// The honest HTTP session boundary available to net/http is one TCP
+		// connection. Keep-alive requests share this EventSession; clients that
+		// open a new connection per request do not. Do not interpret this key as
+		// durable browser, scanner, or actor identity.
+		ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
+			return context.WithValue(ctx, httpSessionCtxKey{}, tracer.NewEventSession(""))
+		},
 	}
 
 	listener, err := net.Listen("tcp", servConf.Address)
@@ -141,6 +152,7 @@ func (httpStrategy *HTTPStrategy) Stop(servConf parser.BeelzebubServiceConfigura
 
 func newHTTPHandler(servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer) http.HandlerFunc {
 	return func(responseWriter http.ResponseWriter, request *http.Request) {
+		request = request.WithContext(context.WithValue(request.Context(), httpTimingStartCtxKey{}, time.Now()))
 		var resp httpResponse
 		var err error
 		command, allowedMethods := matchHTTPCommand(servConf.Commands, request)
@@ -155,7 +167,13 @@ func newHTTPHandler(servConf parser.BeelzebubServiceConfiguration, tr tracer.Tra
 			resp.StatusCode = http.StatusMethodNotAllowed
 			resp.Headers = []string{"Allow:" + strings.Join(allowedMethods, ", ")}
 			resp.Body = http.StatusText(http.StatusMethodNotAllowed)
-			traceRequest(request, tr, parser.Command{}, servConf.Description, "", servConf.TrustedProxiesNets)
+			body, meta := readRequestBody(request)
+			addResponseDescriptors(meta, resp)
+			commandOutput := ""
+			if servConf.CaptureResponseBody {
+				commandOutput = resp.Body
+			}
+			traceRequest(request, tr, parser.Command{}, servConf.Description, body, commandOutput, meta, servConf.TrustedProxiesNets)
 		} else {
 			// If none of the main commands matched, and we have a fallback command configured, process it here.
 			// The regexp is ignored for fallback commands, as they are catch-all for any request.
@@ -193,19 +211,31 @@ func matchHTTPCommand(commands []parser.Command, request *http.Request) (*parser
 	return nil, allowedMethods
 }
 
-func buildHTTPResponse(servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer, command parser.Command, request *http.Request) (httpResponse, error) {
-	resp := httpResponse{
+func buildHTTPResponse(servConf parser.BeelzebubServiceConfiguration, tr tracer.Tracer, command parser.Command, request *http.Request) (resp httpResponse, err error) {
+	resp = httpResponse{
 		Body:       command.Handler,
 		Headers:    command.Headers,
 		StatusCode: command.StatusCode,
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(request.Body, 1024*1024))
-	body := ""
-	if err == nil {
-		body = string(bodyBytes)
-	}
-	traceRequest(request, tr, command, servConf.Description, body, servConf.TrustedProxiesNets)
+	body, meta := readRequestBody(request)
+
+	// The event is emitted once the response is known, so it carries the
+	// status actually decided for this request and timing that covers the
+	// handler, including plugin execution.
+	defer func() {
+		sent := resp
+		if err != nil {
+			// newHTTPHandler replaces a failed build with a 500; describe that.
+			sent = httpResponse{StatusCode: 500, Body: "500 Internal Server Error"}
+		}
+		addResponseDescriptors(meta, sent)
+		commandOutput := ""
+		if servConf.CaptureResponseBody {
+			commandOutput = sent.Body
+		}
+		traceRequest(request, tr, command, servConf.Description, body, commandOutput, meta, servConf.TrustedProxiesNets)
+	}()
 
 	if command.Plugin != "" {
 		host, _ := realClientAddr(request, servConf.TrustedProxiesNets)
@@ -253,12 +283,82 @@ func buildHTTPResponse(servConf parser.BeelzebubServiceConfiguration, tr tracer.
 	return resp, nil
 }
 
-func traceRequest(request *http.Request, tr tracer.Tracer, command parser.Command, HoneypotDescription, body string, trustedProxies []*net.IPNet) {
+// maxRequestBodyBytes bounds how much of a request body is read and traced.
+const maxRequestBodyBytes = 1024 * 1024
+
+// readRequestBody reads at most maxRequestBodyBytes of the body. One byte past
+// the limit is read only to learn whether more existed; it is not retained.
+//
+// It writes body.request.truncated="true" together with body.request.read_budget
+// only when the body exceeded the budget and was cut. A read error is a
+// different condition and is recorded separately as body.request.read_error;
+// the bytes read before the error are retained. A complete body leaves no
+// Metadata behind: Body already carries the bytes, and anything derivable from
+// them (length, digest) is left to the consumer. The two markers are the facts
+// a consumer cannot recover from Body.
+//
+// Descriptor keys use the reserved "body." domain. Metadata keys are
+// lower-case and dot-namespaced by domain so plugins and strategies cannot
+// collide; see the key convention documented alongside Event.Metadata.
+func readRequestBody(request *http.Request) (string, map[string]string) {
+	meta := map[string]string{}
+	if request.Body == nil {
+		return "", meta
+	}
+	bodyBytes, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBodyBytes+1))
+	if err != nil {
+		meta["body.request.read_error"] = err.Error()
+	}
+	if len(bodyBytes) > maxRequestBodyBytes {
+		bodyBytes = bodyBytes[:maxRequestBodyBytes]
+		meta["body.request.truncated"] = "true"
+		meta["body.request.read_budget"] = strconv.Itoa(maxRequestBodyBytes)
+	}
+	return string(bodyBytes), meta
+}
+
+// addResponseDescriptors records the status the handler selected for this
+// request. It is the status as chosen, not bytes confirmed on the wire. The
+// key uses the reserved "http." domain.
+func addResponseDescriptors(meta map[string]string, resp httpResponse) {
+	if meta == nil {
+		return
+	}
+	meta["http.response.status"] = strconv.Itoa(effectiveResponseStatus(resp.StatusCode))
+}
+
+func effectiveResponseStatus(statusCode int) int {
+	if http.StatusText(statusCode) == "" {
+		return http.StatusOK
+	}
+	return statusCode
+}
+
+func traceRequest(request *http.Request, tr tracer.Tracer, command parser.Command, HoneypotDescription, body, commandOutput string, meta map[string]string, trustedProxies []*net.IPNet) {
 	host, port := realClientAddr(request, trustedProxies)
 
 	remoteAddr := host
 	if port != "" {
 		remoteAddr = net.JoinHostPort(host, port)
+	}
+	session, ok := request.Context().Value(httpSessionCtxKey{}).(*tracer.EventSession)
+	if !ok || session == nil {
+		// Requests constructed outside HTTPStrategy.Init (notably unit tests and
+		// embedders calling the handler directly) still receive an isolated key.
+		session = tracer.NewEventSession("")
+	}
+	started, ok := request.Context().Value(httpTimingStartCtxKey{}).(time.Time)
+	if !ok {
+		started = time.Now()
+	}
+	// session.* and timing.* come from the session builder; body.* and http.*
+	// descriptors come from the capture path. Descriptors never override the
+	// builder's keys.
+	metadata := session.NextTimedMetadata(started, time.Now())
+	for key, value := range meta {
+		if _, reserved := metadata[key]; !reserved {
+			metadata[key] = value
+		}
 	}
 	event := tracer.Event{
 		Msg:             "HTTP New request",
@@ -266,6 +366,7 @@ func traceRequest(request *http.Request, tr tracer.Tracer, command parser.Comman
 		Protocol:        tracer.HTTP.String(),
 		HTTPMethod:      request.Method,
 		Body:            body,
+		CommandOutput:   commandOutput,
 		HostHTTPRequest: request.Host,
 		UserAgent:       request.UserAgent(),
 		Cookies:         mapCookiesToString(request.Cookies()),
@@ -278,6 +379,7 @@ func traceRequest(request *http.Request, tr tracer.Tracer, command parser.Comman
 		ID:              uuid.New().String(),
 		Description:     HoneypotDescription,
 		Handler:         command.Name,
+		Metadata:        metadata,
 	}
 	if request.TLS != nil {
 		event.Msg = "HTTPS New Request"

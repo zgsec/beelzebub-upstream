@@ -46,7 +46,9 @@ type Event struct {
 	TLSServerName   string
 	Handler         string
 	// Metadata carries protocol-specific values contributed by plugins without
-	// coupling the tracer to any wire protocol implementation.
+	// coupling the tracer to any wire protocol implementation. Runtime-owned
+	// keys follow the metadata key convention in
+	// docs/content/docs/concepts/events-and-observability.mdx.
 	Metadata map[string]string `json:",omitempty"`
 }
 

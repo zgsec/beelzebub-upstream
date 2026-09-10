@@ -45,6 +45,7 @@ All core settings are nested below `core`.
 | `wirePlugins` | string array | TCP only | Up to 32 registered wire-plugin names, run in declaration order |
 | `passwordRegex` | string | SSH/Telnet | Go regular expression used to accept credentials |
 | `trustedProxies` | string array | no | HTTP proxy IPs or CIDRs allowed to supply forwarded addresses |
+| `captureResponseBody` | boolean | HTTP only | Retain the served response body in the event `CommandOutput`; off by default. The `http.response.status` metadata key is emitted either way |
 | `tlsCertPath` | string | paired | Certificate path; requires `tlsKeyPath` |
 | `tlsKeyPath` | string | paired | Private-key path; requires `tlsCertPath` |
 | `plugin` | object | plugin-dependent | Shared LLM, validation, and rate-limit settings |
