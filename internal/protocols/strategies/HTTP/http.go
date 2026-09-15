@@ -1,6 +1,7 @@
 package HTTP
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -19,6 +20,8 @@ import (
 )
 
 type HTTPStrategy struct{}
+
+const maxHTTPBodyCaptureBytes = 1024 * 1024
 
 type httpResponse struct {
 	StatusCode int
@@ -114,8 +117,16 @@ func buildHTTPResponse(servConf parser.BeelzebubServiceConfiguration, tr tracer.
 		StatusCode: command.StatusCode,
 	}
 
-	// Limit body read to 1MB to prevent DoS attacks
-	bodyBytes, err := io.ReadAll(io.LimitReader(request.Body, 1024*1024))
+	// Bound the copy retained for telemetry, then replay it before the unread tail so
+	// HTTP plugins still receive the original request body.
+	bodyBytes, err := io.ReadAll(io.LimitReader(request.Body, maxHTTPBodyCaptureBytes))
+	request.Body = struct {
+		io.Reader
+		io.Closer
+	}{
+		Reader: io.MultiReader(bytes.NewReader(bodyBytes), request.Body),
+		Closer: request.Body,
+	}
 	body := ""
 	if err == nil {
 		body = string(bodyBytes)
