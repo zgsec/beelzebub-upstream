@@ -1,0 +1,145 @@
+apiVersion: "v1"
+protocol: "http"
+address: ":8086"
+description: "InfluxDB 1.8.10"
+commands:
+  # InfluxDB exposes a lightweight liveness endpoint before authentication.
+  - regex: "^/ping\\?verbose=true$"
+    methods: [GET, HEAD]
+    handler: '{"version":"1.8.10"}'
+    headers:
+      - "Content-Type: text/plain; charset=utf-8"
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 200
+  - regex: "^/ping$"
+    methods: [GET, HEAD]
+    handler: ""
+    headers:
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 204
+  - regex: "^/health(?:\\?.*)?$"
+    methods: [GET]
+    handler: '{"checks":[],"message":"ready for queries and writes","name":"influxdb","status":"pass","version":"1.8.10"}'
+    headers:
+      - "Content-Type: application/json"
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 200
+
+  - regex: "^/status$"
+    methods: [GET, HEAD]
+    handler: ""
+    headers:
+      - "Content-Type: application/json"
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 204
+
+  # Keep common discovery queries ahead of the generic query response. The
+  # Query responses are limited to the URL forms represented below.
+  - regex: "^/query\\?(?:[^&]*&)*q=SHOW(%20|\\+)DATABASES(?:&|$)"
+    methods: [GET, POST]
+    handler: '{"results":[{"statement_id":0,"series":[{"name":"databases","columns":["name"],"values":[["_internal"],["metrics"]]}]}]}'
+    headers:
+      - "Content-Type: application/json"
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 200
+  - regex: "^/query\\?(?:[^&]*&)*q=SHOW(%20|\\+)MEASUREMENTS(?:&|$)"
+    methods: [GET, POST]
+    handler: '{"results":[{"statement_id":0,"series":[{"name":"measurements","columns":["name"],"values":[["http_requests"]]}]}]}'
+    headers:
+      - "Content-Type: application/json"
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 200
+  - regex: "^/query(?:\\?)?$"
+    methods: [GET, POST]
+    handler: '{"error":"missing required parameter \"q\""}'
+    headers:
+      - "Content-Type: application/json"
+      - 'X-Influxdb-Error: missing required parameter "q"'
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 400
+
+  # Query strings are matchable; request bodies are not. This neutral result
+  # covers common SELECT/SHOW discovery without claiming result-set fidelity.
+  - regex: "^/query\\?(?:[^&]*&)*q=(?i:SELECT|SHOW)(?:%20|\\+|&|$).*"
+    methods: [GET, POST]
+    handler: '{"results":[{"statement_id":0}]}'
+    headers:
+      - "Content-Type: application/json"
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 200
+
+  - regex: "^/query\\?(?:[^&]*&)*q=.+"
+    methods: [GET]
+    handler: '{"error":"error parsing query"}'
+    headers:
+      - "Content-Type: application/json"
+      - "X-Influxdb-Error: error parsing query"
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 400
+
+  - regex: "^/query\\?.+$"
+    methods: [GET, POST]
+    handler: '{"error":"missing required parameter \"q\""}'
+    headers:
+      - "Content-Type: application/json"
+      - 'X-Influxdb-Error: missing required parameter "q"'
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 400
+
+  # URL queries are matched here; request bodies are not inspected.
+  - regex: "^/query(?:\\?.*)?$"
+    methods: [OPTIONS]
+    handler: ""
+    headers:
+      - "Content-Type: application/json"
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 204
+  - regex: "^/query(?:\\?.*)?$"
+    handler: '{"error":"Method Not Allowed"}'
+    headers:
+      - "Content-Type: application/json"
+      - "Allow: OPTIONS, GET, POST"
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 405
+
+  - regex: "^/write(?:\\?.*)?$"
+    methods: [POST]
+    handler: ""
+    headers:
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 204
+  - regex: "^/write(?:\\?.*)?$"
+    methods: [OPTIONS]
+    handler: ""
+    headers:
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 204
+  - regex: "^/write(?:\\?.*)?$"
+    handler: "Method Not Allowed\n"
+    headers:
+      - "Content-Type: text/plain; charset=utf-8"
+      - "Allow: OPTIONS, POST"
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 405
+  - regex: ".*"
+    handler: "404 page not found\n"
+    headers:
+      - "Content-Type: text/plain; charset=utf-8"
+      - "X-Influxdb-Version: 1.8.10"
+      - "X-Influxdb-Build: OSS"
+    statusCode: 404

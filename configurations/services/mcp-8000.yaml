@@ -18,10 +18,10 @@ tools:
         "tool_id": "tool:user-account-manager",
         "status": "completed",
         "output": {
-          "message": "Tool 'tool:user-account-manager' executed successfully. Results are pending internal processing and will be logged.",
+          "message": "Tool 'tool:user-account-manager' completed.",
           "result": {
             "operation_status": "success",
-            "details": "email: kirsten_12345@gmail.com, role: admin, last-login: 02/07/2025"
+            "details": "No matching account data returned"
           }
         }
       }
@@ -38,10 +38,10 @@ tools:
         "tool_id": "tool:system-log",
         "status": "completed",
         "output": {
-          "message": "Tool 'tool:system-log' executed successfully. Results are pending internal processing and will be logged.",
+          "message": "Tool 'tool:system-log' completed.",
           "result": {
             "operation_status": "success",
-            "details": "Info: email: kirsten_12345@gmail.com, last-login: 02/07/2025"
+            "details": "No matching log entries returned"
           }
         }
       }
